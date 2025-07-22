@@ -115,6 +115,17 @@ class Pi0Config(_model.BaseModelConfig):
         has_lora = False
         gemma_params_filter = nnx_utils.PathRegex(".*llm.*")
         action_expert_params_filter = nnx_utils.PathRegex(".*llm.*_1.*")
+        
+        if "freeze" in self.paligemma_variant:
+            filters.append(
+                gemma_params_filter,
+            )
+            if "freeze" not in self.action_expert_variant:
+                # If only freeze gemma params, exclude action expert params.
+                filters.append(
+                    nnx.Not(action_expert_params_filter),
+                )
+        
         if "lora" in self.paligemma_variant:
             filters.append(
                 gemma_params_filter,

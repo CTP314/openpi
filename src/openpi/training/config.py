@@ -562,6 +562,56 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
+        name="pi0_libero_reproduce",
+        model=pi0.Pi0Config(),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_libero_from_scratch",
+        model=pi0.Pi0Config(),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.PaliGemmaWeightLoader(),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_libero_freeze_vlm",
+        model=pi0.Pi0Config(paligemma_variant="gemma_2b_freeze"),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.PaliGemmaWeightLoader(),
+        num_train_steps=30_000,
+        freeze_filter=pi0.Pi0Config(paligemma_variant="gemma_2b_freeze").get_freeze_filter(),
+    ),
+    TrainConfig(
+        name="pi0_libero_freeze_pi0_vlm",
+        model=pi0.Pi0Config(paligemma_variant="gemma_2b_freeze"),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+        freeze_filter=pi0.Pi0Config(paligemma_variant="gemma_2b_freeze").get_freeze_filter(),
+    ),
+    TrainConfig(
         name="pi0_libero_low_mem_finetune",
         # Here is an example of loading a pi0 model for LoRA fine-tuning.
         model=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
