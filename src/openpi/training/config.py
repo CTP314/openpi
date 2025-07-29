@@ -6,7 +6,7 @@ import dataclasses
 import difflib
 import logging
 import pathlib
-from typing import Any, Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias, Literal
 
 import etils.epath as epath
 import flax.nnx as nnx
@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.actmem_policy as actmem_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -250,7 +251,61 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
         )
+        
+@dataclasses.dataclass(frozen=True)
+class LeRobotActMemBenchDataConfig(DataConfigFactory):
+    """
+    This config is used to configure transforms that are applied at various parts of the data pipeline.
+    For your own dataset, you can copy this class and modify the transforms to match your dataset based on the
+    comments below.
+    """
+    action_space: Literal["pd_joint_pos", "pd_ee_pos"] = "pd_joint_pos"
 
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "image",
+                        "observation/wrist_image": "wrist_image",
+                        "observation/state": "state",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[actmem_policy.ActMemInputs(action_dim=model_config.action_dim, model_type=model_config.model_type)],
+            outputs=[actmem_policy.ActMemOutputs()],
+        )
+        
+        if self.action_space == "pd_joint_pos":
+            # Data loader returns absolute joint position actions -- convert to delta actions for training.
+            delta_action_mask = _transforms.make_bool_mask(7, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+        elif self.action_space == "pd_ee_pos":
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+        else:
+            raise ValueError(f"Unknown action space: {self.action_space}.")
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotLiberoDataConfig(DataConfigFactory):
@@ -526,6 +581,31 @@ _CONFIGS = [
                 prompt_from_task=True,
             ),
         ),
+    ),
+    # Fine-tuning actmem_bench configs.
+    TrainConfig(
+        name="pi0_actmem_bench-PickCylinderByMemory-v1-pd_joint_pos-rgbd-rt",
+        model=pi0.Pi0Config(action_horizon=10),
+        data=LeRobotActMemBenchDataConfig(
+            repo_id="actmem_bench-PickCylinderByMemory-v1-pd_joint_pos-rgbd-rt",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_droid_actmem_bench-PickCylinderByMemory-v1-pd_joint_pos-rgbd-rt",
+        model=pi0.Pi0Config(action_horizon=10),
+        data=LeRobotActMemBenchDataConfig(
+            repo_id="actmem_bench-PickCylinderByMemory-v1-pd_joint_pos-rgbd-rt",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_droid/params"),
+        num_train_steps=30_000,
     ),
     #
     # Fine-tuning Libero configs.
