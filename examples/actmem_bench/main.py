@@ -23,7 +23,7 @@ class Args:
     #################################################################################################################
     host: str = "0.0.0.0"
     port: int = 8000
-    resize_size: int = 224
+    resize_size: int | None = 224
     replan_steps: int = 10
 
     #################################################################################################################
@@ -53,7 +53,7 @@ class Args:
     seed: int = 7  # Random Seed (for reproducibility)
 
 
-def eval_libero(args: Args) -> None:
+def eval_actmem(args: Args) -> None:
     # Set random seed
     np.random.seed(args.seed)
 
@@ -102,12 +102,13 @@ def eval_libero(args: Args) -> None:
                 try:
                     img = obs["sensor_data"]["base_camera"]["rgb"].cpu().numpy()[0]
                     wrist_img = obs["sensor_data"]["hand_camera"]["rgb"].cpu().numpy()[0]
-                    img = image_tools.convert_to_uint8(
-                        image_tools.resize_with_pad(img, args.resize_size, args.resize_size)
-                    )
-                    wrist_img = image_tools.convert_to_uint8(
-                        image_tools.resize_with_pad(wrist_img, args.resize_size, args.resize_size)
-                    )
+                    if args.resize_size is not None:
+                        img = image_tools.convert_to_uint8(
+                            image_tools.resize_with_pad(img, args.resize_size, args.resize_size)
+                        )
+                        wrist_img = image_tools.convert_to_uint8(
+                            image_tools.resize_with_pad(wrist_img, args.resize_size, args.resize_size)
+                        )
                     
                     replay_images.append(img)
                     
@@ -201,4 +202,4 @@ def _quat2euler(quat):
 
 if __name__ == "__main__":
     logger.info("Starting evaluation...")
-    tyro.cli(eval_libero)
+    tyro.cli(eval_actmem)

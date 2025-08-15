@@ -607,6 +607,18 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_droid/params"),
         num_train_steps=30_000,
     ),
+    TrainConfig(
+        name="pi0_from_scratch_actmem_bench-PickCylinderByMemory-v1-pd_joint_pos-rgbd-rt",
+        model=pi0.Pi0Config(action_horizon=10),
+        data=LeRobotActMemBenchDataConfig(
+            repo_id="actmem_bench-PickCylinderByMemory-v1-pd_joint_pos-rgbd-rt",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.PaliGemmaWeightLoader(),
+        num_train_steps=30_000,
+    ),
     #
     # Fine-tuning Libero configs.
     #
