@@ -16,9 +16,9 @@ from openpi_client import websocket_client_policy as _websocket_client_policy
 import tqdm
 import tyro
 import pandas as pd
-from typing import Optional
+from typing import Optional, Literal
 
-LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
+# LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
 
 
@@ -31,6 +31,7 @@ class Args:
     port: int = 8000
     resize_size: Optional[int] = 224
     replan_steps: int = 5
+    controller: Literal["joint_position", "default"] = "default"
 
     #################################################################################################################
     # LIBERO environment-specific parameters
@@ -95,7 +96,9 @@ def eval_libero(args: Args) -> None:
         initial_states = task_suite.get_task_init_states(task_id)
 
         # Initialize LIBERO environment and task description
-        env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
+        env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed, args.controller)
+
+        libero_dummy_action = [0.0] * (env.env.action_dim - 1) + [-1.0]
 
         # Start episodes
         task_episodes, task_successes = 0, 0
@@ -120,7 +123,7 @@ def eval_libero(args: Args) -> None:
                     # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
                     # and we need to wait for them to fall
                     if t < args.num_steps_wait:
-                        obs, reward, done, info = env.step(LIBERO_DUMMY_ACTION)
+                        obs, reward, done, info = env.step(libero_dummy_action)
                         t += 1
                         continue
 
@@ -142,13 +145,16 @@ def eval_libero(args: Args) -> None:
                     if not action_plan:
                         # Finished executing previous action chunk -- compute new chunk
                         # Prepare observations dict
+                        if args.controller == "joint_position":
+                            arm_state = obs["robot0_joint_pos"]
+                        else:
+                            arm_state = np.concatenate((obs["robot0_eef_pos"], _quat2axisangle(obs["robot0_eef_quat"])))
                         element = {
                             "observation/image": img,
                             "observation/wrist_image": wrist_img,
                             "observation/state": np.concatenate(
                                 (
-                                    obs["robot0_eef_pos"],
-                                    _quat2axisangle(obs["robot0_eef_quat"]),
+                                    arm_state,
                                     obs["robot0_gripper_qpos"],
                                 )
                             ),
@@ -165,6 +171,9 @@ def eval_libero(args: Args) -> None:
                     action = action_plan.popleft()
 
                     # Execute action in environment
+                    if args.controller == "joint_position":
+                        joint_state = action[: env.env.action_dim - 1]
+                        action = np.concatenate([(joint_state - env.robots[0].controller.joint_pos) / 0.05, action[-1:]])
                     obs, reward, done, info = env.step(action.tolist())
                     if done:
                         task_successes += 1
@@ -209,12 +218,23 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
     logging.info(f"Total episodes: {total_episodes}")
 
+JOINT_POSITION_CONTROLLER= {
+    "controller_configs": {
+        'type': 'JOINT_POSITION', 'input_max': 1, 'input_min': -1, 
+        'output_max': 0.05, 'output_min': -0.05, 'kp': 5000, 'damping_ratio': 1, 
+        'impedance_mode': 'fixed', 'kp_limits': [0, 300], 'damping_ratio_limits': [0, 10], 
+        'qpos_limits': None, 'interpolation': None, 'ramp_ratio': 0.2
+    },
+    "controller": "JOINT_POSITION"
+}
 
-def _get_libero_env(task, resolution, seed):
+def _get_libero_env(task, resolution, seed, controller):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
     env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
+    if controller == "joint_position":
+        env_args.update(JOINT_POSITION_CONTROLLER)
     env = OffScreenRenderEnv(**env_args)
     env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
     return env, task_description

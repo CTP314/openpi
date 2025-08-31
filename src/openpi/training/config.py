@@ -314,7 +314,11 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
     For your own dataset, you can copy this class and modify the transforms to match your dataset based on the
     comments below.
     """
-
+    unpadded_action_dim: int = 7
+    drop_image: bool = False
+    drop_state: bool = False
+    drop_prompt: bool = False
+    
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # The repack transform is *only* applied to the data coming from the dataset,
@@ -346,8 +350,14 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         # how to modify the transforms to match your dataset. Once you created your own transforms, you can
         # replace the transforms below with your own.
         data_transforms = _transforms.Group(
-            inputs=[libero_policy.LiberoInputs(action_dim=model_config.action_dim, model_type=model_config.model_type)],
-            outputs=[libero_policy.LiberoOutputs()],
+            inputs=[libero_policy.LiberoInputs(
+                action_dim=model_config.action_dim, 
+                model_type=model_config.model_type,
+                drop_image=self.drop_image,
+                drop_state=self.drop_state,
+                drop_prompt=self.drop_prompt
+            )],
+            outputs=[libero_policy.LiberoOutputs(unpadded_action_dim=self.unpadded_action_dim)],
         )
 
         # One additional data transform: pi0 models are trained on delta actions (relative to the first
@@ -362,7 +372,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
         # TODO(karl): comment this out once we have updated the Libero checkpoints to not use
         # the delta action transform
-        delta_action_mask = _transforms.make_bool_mask(6, -1)
+        delta_action_mask = _transforms.make_bool_mask(self.unpadded_action_dim, -1)
         data_transforms = data_transforms.push(
             inputs=[_transforms.DeltaActions(delta_action_mask)],
             outputs=[_transforms.AbsoluteActions(delta_action_mask)],
@@ -661,6 +671,59 @@ _CONFIGS = [
             base_config=DataConfig(
                 prompt_from_task=True,
             ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_libero_joint",
+        model=pi0.Pi0Config(),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero-joint",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            unpadded_action_dim=8,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_droid_libero_joint",
+        model=pi0.Pi0Config(),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero-joint",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            unpadded_action_dim=8,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_droid/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_droid_libero",
+        model=pi0.Pi0Config(),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_droid/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_libero_joint_d-p,s_h-120",
+        model=pi0.Pi0Config(action_horizon=120),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero-joint",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            unpadded_action_dim=8,
+            drop_prompt=True,
+            drop_state=True,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=30_000,

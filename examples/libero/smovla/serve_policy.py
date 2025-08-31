@@ -204,11 +204,15 @@ class WebsocketPolicyServer:
 @dataclasses.dataclass
 class Args:
     pretrained_policy_path: pathlib.Path
+    ckpt_path: pathlib.Path | None
     port: int = 8000
     device: str = "cuda:0"
 
 def main(args: Args) -> None:
     policy = SmolVLAPolicy.from_pretrained(args.pretrained_policy_path).to(args.device)
+    if args.ckpt_path is not None:
+        policy.load_state_dict(torch.load(args.ckpt_path)["model_state_dict"])
+        logging.info("Loaded policy weights from %s", args.ckpt_path)
     
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
