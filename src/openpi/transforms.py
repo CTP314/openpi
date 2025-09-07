@@ -104,10 +104,12 @@ class RepackTransform(DataTransformFn):
 @dataclasses.dataclass(frozen=True)
 class InjectDefaultPrompt(DataTransformFn):
     prompt: str | None
+    null_prompt: str = ""
 
     def __call__(self, data: DataDict) -> DataDict:
         if self.prompt is not None and "prompt" not in data:
             data["prompt"] = np.asarray(self.prompt)
+        data["null_prompt"] = np.asarray(self.null_prompt)
         return data
 
 
@@ -249,7 +251,16 @@ class TokenizePrompt(DataTransformFn):
             prompt = prompt.item()
 
         tokens, token_masks = self.tokenizer.tokenize(prompt)
-        return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks}
+        
+        if (null_prompt := data.pop("null_prompt", None)) is None:
+            raise ValueError("mull prompt is required")
+        
+        if not isinstance(null_prompt, str):
+            null_prompt = null_prompt.item()
+            
+        null_tokens, null_token_masks = self.tokenizer.tokenize(null_prompt)
+        
+        return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks, "null_tokenized_prompt": null_tokens, "null_tokenized_prompt_mask": null_token_masks}
 
 
 @dataclasses.dataclass(frozen=True)

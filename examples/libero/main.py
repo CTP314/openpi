@@ -29,6 +29,7 @@ class Args:
     #################################################################################################################
     host: str = "0.0.0.0"
     port: int = 8000
+    guidance_scale: float = 1.
     resize_size: Optional[int] = 224
     replan_steps: int = 5
     controller: Literal["joint_position", "default"] = "default"
@@ -159,6 +160,7 @@ def eval_libero(args: Args) -> None:
                                 )
                             ),
                             "prompt": str(task_description),
+                            "guidance_scale": args.guidance_scale
                         }
 
                         # Query model to get action

@@ -93,6 +93,8 @@ class DataConfig:
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
+    # Drop last frames to avoid incomplete action sequences.
+    num_drop_last: int | None = None
 
 
 class GroupFactory(Protocol):
@@ -372,7 +374,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
         # TODO(karl): comment this out once we have updated the Libero checkpoints to not use
         # the delta action transform
-        delta_action_mask = _transforms.make_bool_mask(self.unpadded_action_dim, -1)
+        delta_action_mask = _transforms.make_bool_mask(self.unpadded_action_dim - 1, -1)
         data_transforms = data_transforms.push(
             inputs=[_transforms.DeltaActions(delta_action_mask)],
             outputs=[_transforms.AbsoluteActions(delta_action_mask)],
@@ -689,6 +691,60 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
+        name="cfg_libero_joint",
+        model=pi0.Pi0Config(cond_drop_prob=0.2, cfg=True),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero-joint",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            unpadded_action_dim=8,
+        ),
+        weight_loader=weight_loaders.PaliGemmaWeightLoader(),
+        num_train_steps=30_000,
+        freeze_filter=pi0.Pi0Config(paligemma_variant="gemma_2b_freeze").get_freeze_filter(),
+    ),
+    TrainConfig(
+        name="pi0_libero_joint_fs_fv",
+        model=pi0.Pi0Config(),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero-joint",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            unpadded_action_dim=8,
+        ),
+        weight_loader=weight_loaders.PaliGemmaWeightLoader(),
+        num_train_steps=30_000,
+        freeze_filter=pi0.Pi0Config(paligemma_variant="gemma_2b_freeze").get_freeze_filter(),
+    ),
+    TrainConfig(
+        name="cfg_droid_libero_joint",
+        model=pi0.Pi0Config(cond_drop_prob=0.2, cfg=True),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero-joint",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            unpadded_action_dim=8,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_droid/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="cfg_droid_libero_joint_d-0.1",
+        model=pi0.Pi0Config(cond_drop_prob=0.1, cfg=True),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero-joint",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            unpadded_action_dim=8,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_droid/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
         name="pi0_droid_libero_joint",
         model=pi0.Pi0Config(),
         data=LeRobotLiberoDataConfig(
@@ -714,16 +770,49 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
-        name="pi0_libero_joint_d-p,s_h-120",
+        name="pi0_libero_joint_d-i,s_h-120",
         model=pi0.Pi0Config(action_horizon=120),
         data=LeRobotLiberoDataConfig(
             repo_id="libero-joint",
             base_config=DataConfig(
                 prompt_from_task=True,
+                num_drop_last=120,
             ),
             unpadded_action_dim=8,
-            drop_prompt=True,
+            drop_image=True,
             drop_state=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_libero_joint_d-i,s_h-120_f-vlm",
+        model=pi0.Pi0Config(action_horizon=120),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero-joint",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                num_drop_last=120,
+            ),
+            unpadded_action_dim=8,
+            drop_image=True,
+            drop_state=True,
+        ),
+        weight_loader=weight_loaders.PaliGemmaWeightLoader(),
+        num_train_steps=30_000,
+        freeze_filter=pi0.Pi0Config(paligemma_variant="gemma_2b_freeze").get_freeze_filter(),
+    ),
+    TrainConfig(
+        name="pi0_libero_joint_d-i_h-120",
+        model=pi0.Pi0Config(action_horizon=120),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero-joint",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                num_drop_last=120,
+            ),
+            unpadded_action_dim=8,
+            drop_image=True,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=30_000,

@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import functools
 
 import einops
 import flax.nnx as nnx
@@ -74,6 +75,9 @@ class Pi0Config(_model.BaseModelConfig):
     action_dim: int = 32
     action_horizon: int = 50
     max_token_len: int = 48
+    
+    cond_drop_prob: float = 0.  # Probability of dropping conditioning inputs during training.
+    cfg: bool = False
 
     @property
     @override
@@ -181,6 +185,9 @@ class Pi0(_model.BaseModel):
         self.action_time_mlp_in = nnx.Linear(2 * action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_time_mlp_out = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
+        
+        self.cond_drop_prob = config.cond_drop_prob
+        self.cfg = config.cfg
 
     @at.typecheck
     def embed_prefix(
@@ -253,7 +260,7 @@ class Pi0(_model.BaseModel):
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
     ) -> at.Float[at.Array, "*b ah"]:
         preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
-        observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
+        observation = _model.preprocess_observation(preprocess_rng, observation, train=train, cond_drop_prob=self.cond_drop_prob)
 
         batch_shape = actions.shape[:-2]
         noise = jax.random.normal(noise_rng, actions.shape)
@@ -283,6 +290,7 @@ class Pi0(_model.BaseModel):
         observation: _model.Observation,
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
+        guidance_scale: float = 1.
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
@@ -291,40 +299,69 @@ class Pi0(_model.BaseModel):
         batch_size = observation.state.shape[0]
         noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
 
-        # first fill KV cache with a forward pass of the prefix
+        # 1. Prepare the KV cache for the conditional prefix
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
         _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+        
+        # 2. If CFG is enabled, prepare resources for the unconditional pass
+        null_kv_cache = None
+        null_prefix_mask = None
+        null_observation = None
+        if self.cfg:
+            # Create the null observation for unconditional generation
+            null_observation = _model.nullify_modalities(observation, nullify_images=True, nullify_state=True, nullify_prompt=True)
+            
+            # Compute the KV cache for the unconditional prefix
+            null_prefix_tokens, null_prefix_mask, null_prefix_ar_mask = self.embed_prefix(null_observation)
+            null_prefix_attn_mask = make_attn_mask(null_prefix_mask, null_prefix_ar_mask)
+            null_positions = jnp.cumsum(null_prefix_mask, axis=1) - 1
+            _, null_kv_cache = self.PaliGemma.llm([null_prefix_tokens, None], mask=null_prefix_attn_mask, positions=null_positions)
 
+        # 3. Define a unified step function for the diffusion loop
         def step(carry):
             x_t, time = carry
+            
+            # --- Always compute the conditional velocity (v_cond) ---
             suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
                 observation, x_t, jnp.broadcast_to(time, batch_size)
             )
-            # `suffix_attn_mask` is shape (b, suffix_len, suffix_len) indicating how the suffix tokens can attend to each
-            # other
             suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
-            # `prefix_attn_mask` is shape (b, suffix_len, prefix_len) indicating how the suffix tokens can attend to the
-            # prefix tokens
-            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
-            # `combined_mask` is shape (b, suffix_len, prefix_len + suffix_len) indicating how the suffix tokens (which
-            # generate the queries) can attend to the full prefix + suffix sequence (which generates the keys and values)
-            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
-            assert full_attn_mask.shape == (
-                batch_size,
-                suffix_tokens.shape[1],
-                prefix_tokens.shape[1] + suffix_tokens.shape[1],
-            )
-            # `positions` is shape (b, suffix_len) indicating the positions of the suffix tokens
+            cond_prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            full_attn_mask = jnp.concatenate([cond_prefix_attn_mask, suffix_attn_mask], axis=-1)
             positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
-
+            
             (prefix_out, suffix_out), _ = self.PaliGemma.llm(
                 [None, suffix_tokens], mask=full_attn_mask, positions=positions, kv_cache=kv_cache
             )
             assert prefix_out is None
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            v_cond = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
+            # --- If guidance is enabled, compute unconditional velocity and apply CFG ---
+            if self.cfg:
+                # Compute unconditional velocity (v_uncond)
+                null_suffix_tokens, null_suffix_mask, null_suffix_ar_mask = self.embed_suffix(
+                    null_observation, x_t, jnp.broadcast_to(time, batch_size)
+                )
+                null_suffix_attn_mask = make_attn_mask(null_suffix_mask, null_suffix_ar_mask)
+                uncond_prefix_attn_mask = einops.repeat(null_prefix_mask, "b p -> b s p", s=null_suffix_tokens.shape[1])
+                null_full_attn_mask = jnp.concatenate([uncond_prefix_attn_mask, null_suffix_attn_mask], axis=-1)
+                null_positions = jnp.sum(null_prefix_mask, axis=-1)[:, None] + jnp.cumsum(null_suffix_mask, axis=-1) - 1
+
+                (null_prefix_out, null_suffix_out), _ = self.PaliGemma.llm(
+                    [None, null_suffix_tokens], mask=null_full_attn_mask, positions=null_positions, kv_cache=null_kv_cache
+                )
+                assert null_prefix_out is None
+                v_uncond = self.action_out_proj(null_suffix_out[:, -self.action_horizon :])
+                
+                # Combine using the CFG formula
+                v_t = v_uncond + guidance_scale * (v_cond - v_uncond)
+            else:
+                # Without guidance, the conditional velocity is the final velocity
+                v_t = v_cond
+            
+            # --- Perform the unified update step ---
             return x_t + dt * v_t, time + dt
 
         def cond(carry):
@@ -333,4 +370,65 @@ class Pi0(_model.BaseModel):
             return time >= -dt / 2
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
+        return x_0
+
+    @override
+    def sample_actions_with_edits(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        edits: _model.Edits,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+    ) -> _model.Actions:
+        """
+        Samples actions using an Euler integrator, with inpainting guided by `edits`.
+        """
+        observation = _model.preprocess_observation(None, observation, train=False)
+        known_actions = edits.actions
+        inpainting_mask = edits.mask.astype(jnp.float32)
+
+        dt = -1.0 / num_steps
+        batch_size = observation.state.shape[0]
+        noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+
+        def step(carry):
+            x_t, time = carry
+
+            suffix_tokens, suffix_mask, suffix_ar_mask = self.embed_suffix(
+                observation, x_t, jnp.broadcast_to(time, batch_size)
+            )
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+            (_, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens], mask=full_attn_mask, positions=positions, kv_cache=kv_cache
+            )
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+            x_t_minus_dt_pred = x_t + dt * v_t
+            
+            next_time = time + dt
+            x_t_minus_dt_known = next_time * noise + (1.0 - next_time) * known_actions
+            
+            x_t_minus_dt = (
+                x_t_minus_dt_pred * (1 - inpainting_mask)
+                + x_t_minus_dt_known * inpainting_mask
+            )
+
+            return (x_t_minus_dt, next_time)
+
+        def cond(carry):
+            _, time = carry
+            return time >= -dt / 2
+
+        initial_carry = (noise, 1.0)
+        x_0, _ = jax.lax.while_loop(cond, step, initial_carry)
+        
         return x_0

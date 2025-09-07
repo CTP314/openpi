@@ -49,13 +49,17 @@ class LiberoInputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
         # We only mask padding for pi0 model, not pi0-FAST. Do not change this for your own dataset.
         mask_padding = self.model_type == _model.ModelType.PI0
+        
+        drop_state = self.drop_state
+        drop_image = self.drop_image
+        drop_prompt = self.drop_prompt
 
         # We pad the proprioceptive input to the action dimension of the model.
         # For pi0-FAST, we don't pad the state. For Libero, we don't need to differentiate
         # since the pi0-FAST action_dim = 7, which is < state_dim = 8, so pad is skipped.
         # Keep this for your own dataset, but if your dataset stores the proprioceptive input
         # in a different key than "observation/state", you should change it below.
-        state = transforms.pad_to_dim(data["observation/state"], self.action_dim) if not self.drop_state else np.zeros(self.action_dim)
+        state = transforms.pad_to_dim(data["observation/state"], self.action_dim) if not drop_state else np.zeros(self.action_dim)
 
         # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
         # stores as float32 (C,H,W), gets skipped for policy inference.
@@ -73,16 +77,16 @@ class LiberoInputs(transforms.DataTransformFn):
         inputs = {
             "state": state,
             "image": {
-                "base_0_rgb": base_image if not self.drop_image else np.zeros_like(base_image),
-                "left_wrist_0_rgb": wrist_image if not self.drop_image else np.zeros_like(base_image),
+                "base_0_rgb": base_image if not drop_image else np.zeros_like(base_image),
+                "left_wrist_0_rgb": wrist_image if not drop_image else np.zeros_like(base_image),
                 # Pad any non-existent images with zero-arrays of the appropriate shape.
                 "right_wrist_0_rgb": np.zeros_like(base_image),
             },
             "image_mask": {
-                "base_0_rgb": np.True_ if not mask_padding or not self.drop_image else np.False_,
-                "left_wrist_0_rgb": np.True_ if not mask_padding or not self.drop_image else np.False_,
+                "base_0_rgb": np.True_,
+                "left_wrist_0_rgb": np.True_,
                 # Mask any non-existent images with False (if ``mask_padding`` is True).
-                "right_wrist_0_rgb": np.False_ if mask_padding and self.drop_image else np.True_,
+                "right_wrist_0_rgb": np.False_ if mask_padding else np.True_,
             },
         }
 
@@ -98,7 +102,7 @@ class LiberoInputs(transforms.DataTransformFn):
         # Keep this for your own dataset (but modify the key if the instruction is not
         # stored in "prompt"; the output dict always needs to have the key "prompt").
         if "prompt" in data:
-            inputs["prompt"] = data["prompt"] if not self.drop_prompt else ""
+            inputs["prompt"] = data["prompt"] if not drop_prompt else ""
 
         return inputs
 
@@ -117,4 +121,4 @@ class LiberoOutputs(transforms.DataTransformFn):
         # dimension, we need to now parse out the correct number of actions in the return dict.
         # For Libero, we only return the first 7 actions (since the rest is padding).
         # For your own dataset, replace `7` with the action dimension of your dataset.
-        return {"actions": np.asarray(data["actions"][:, :self.unpadded_action_dim])}
+        return {"actions": np.asarray(data["actions"][..., :self.unpadded_action_dim])}

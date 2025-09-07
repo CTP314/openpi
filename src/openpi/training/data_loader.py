@@ -127,7 +127,7 @@ class FakeDataset(Dataset):
 
 
 def create_torch_dataset(
-    data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
+    data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig, drop_last: bool = True
 ) -> Dataset:
     """Create a dataset for training."""
     repo_id = data_config.repo_id
@@ -143,7 +143,12 @@ def create_torch_dataset(
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
     )
-
+    if data_config.num_drop_last is not None and drop_last:
+        filtered_indices = []
+        for ep_start, ep_end in zip(dataset.episode_data_index['from'], dataset.episode_data_index['to']):
+            filtered_indices.extend(list(range(ep_start, max(ep_start + 1, ep_end - data_config.num_drop_last))))
+        dataset = torch.utils.data.Subset(dataset, filtered_indices)
+    
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
 

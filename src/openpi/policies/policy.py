@@ -32,6 +32,7 @@ class Policy(BasePolicy):
         metadata: dict[str, Any] | None = None,
     ):
         self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+        self._sample_actions_with_edits = nnx_utils.module_jit(model.sample_actions_with_edits)
         self._input_transform = _transforms.compose(transforms)
         self._output_transform = _transforms.compose(output_transforms)
         self._rng = rng or jax.random.key(0)
@@ -41,6 +42,9 @@ class Policy(BasePolicy):
     @override
     def infer(self, obs: dict) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
+        sample_kwargs = self._sample_kwargs
+        sample_kwargs["guidance_scale"]  = obs.pop("guidance_scale", 1.)
+
         inputs = jax.tree.map(lambda x: x, obs)
         inputs = self._input_transform(inputs)
         # Make a batch and convert to jax.Array.
@@ -50,12 +54,42 @@ class Policy(BasePolicy):
         self._rng, sample_rng = jax.random.split(self._rng)
         outputs = {
             "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs),
+            "actions": self._sample_actions(sample_rng, _model.Observation.from_dict(inputs),  **sample_kwargs),
         }
         # Unbatch and convert to np.ndarray.        # Unbatch and convert to np.ndarray.
         outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
         model_time = time.monotonic() - start_time
 
+        outputs = self._output_transform(outputs)
+        outputs["policy_timing"] = {
+            "infer_ms": model_time * 1000,
+        }
+        return outputs
+    
+    def sample(self, obs: dict, edit: dict, num_samples: int) -> dict:  # type: ignore[misc]
+        # Make a copy since transformations may modify the inputs in place.
+        inputs = jax.tree.map(lambda x: x, obs)
+        inputs = self._input_transform(inputs)
+        # Make a batch and convert to jax.Array.
+        inputs = jax.tree.map(
+            lambda x: jnp.repeat(jnp.asarray(x)[np.newaxis, ...], num_samples, axis=0),
+            inputs
+        )
+
+        edit_inputs = jax.tree.map(lambda x: x, edit)
+        edit_inputs = jax.tree.map(
+            lambda x: jnp.repeat(jnp.asarray(x)[np.newaxis, ...], num_samples, axis=0),
+            edit_inputs
+        )
+        start_time = time.monotonic()
+        self._rng, sample_rng = jax.random.split(self._rng)
+        outputs = {
+            "state": inputs["state"],
+            "actions": self._sample_actions_with_edits(sample_rng, _model.Observation.from_dict(inputs), _model.Edits.from_dict(edit_inputs), **self._sample_kwargs),
+        }
+        outputs = jax.tree.map(lambda x: np.asarray(x), outputs)
+        model_time = time.monotonic() - start_time
+        
         outputs = self._output_transform(outputs)
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
